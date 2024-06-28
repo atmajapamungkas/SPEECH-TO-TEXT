@@ -1,0 +1,147 @@
+import os
+import numpy as np
+import librosa
+import matplotlib.pyplot as plt
+from scipy.spatial.distance import euclidean
+from fastdtw import fastdtw
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, confusion_matrix, ConfusionMatrixDisplay
+from sklearn.preprocessing import LabelEncoder
+import pickle
+import sounddevice as sd
+# Function to load audio and extract MFCC features
+def extract_mfcc(file_path, n_mfcc=13):
+    y, sr = librosa.load(file_path, sr=None)
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc)
+    return mfcc
+# Function to compute Dynamic Time Warping (DTW) and return path
+def compute_dtw(mfcc1, mfcc2):
+    distance, path = fastdtw(mfcc1.T, mfcc2.T, dist=euclidean)
+    return distance, path
+
+# Function to compute Dynamic Time Warping (DTW) and return aligned features
+def align_mfcc_with_dtw(mfcc1, mfcc2):
+    distance, path = fastdtw(mfcc1.T, mfcc2.T, dist=euclidean)
+    aligned_mfcc1 = np.array([mfcc1[:, i] for i, j in path]).T
+    aligned_mfcc2 = np.array([mfcc2[:, j] for i, j in path]).T
+    return aligned_mfcc1, aligned_mfcc2, distance, path
+
+# Function to process all audio files in a given directory and extract MFCC features
+def process_audio_dataset(base_dir):
+    audio_files = []
+    labels = []
+    for root, _, files in os.walk(base_dir):
+        for file in files:
+            if file.endswith('.wav'):
+                file_path = os.path.join(root, file)
+                label = os.path.basename(root)  # Use the folder name as the label
+                audio_files.append(file_path)
+                labels.append(label)
+    
+
+    mfcc_features = [extract_mfcc(file) for file in audio_files]
+    
+    # Debugging: Check if MFCC features are extracted
+    if not mfcc_features:
+        print("No MFCC features extracted.")
+    else:
+        print("Extracted MFCC features for all audio files.")
+    
+    return mfcc_features, labels, audio_files
+
+# Function to pad MFCC features to the same length
+def pad_mfcc_features(mfcc_features, max_length):
+    padded_features = []
+    for mfcc in mfcc_features:
+        if mfcc.shape[1] < max_length:
+            pad_width = max_length - mfcc.shape[1]
+            mfcc = np.pad(mfcc, ((0, 0), (0, pad_width)), mode='constant')
+        else:
+            mfcc = mfcc[:, :max_length]
+        padded_features.append(mfcc.flatten())
+    return np.array(padded_features)
+
+# Visualize DTW
+def plot_dtw(mfcc1, mfcc2, path):
+    plt.figure(figsize=(10, 5))
+    
+    plt.subplot(1, 2, 1)
+    plt.imshow(mfcc1, aspect='auto', origin='lower')
+    plt.title('MFCC 1')
+    
+    plt.subplot(1, 2, 2)
+    plt.imshow(mfcc2, aspect='auto', origin='lower')
+    plt.title('MFCC 2')
+    
+    plt.figure(figsize=(10, 5))
+    plt.imshow(np.zeros_like(mfcc1.T), aspect='auto', origin='lower', cmap='gray')
+    for (i, j) in path:
+        plt.plot([i, j], [i, j], color='red')
+    plt.title('DTW Path')
+    plt.show()
+# Example usage
+base_dir = 'dataset1'  # Make sure this directory exists and contains .wav files
+mfcc_features, labels, audio_files = process_audio_dataset(base_dir)
+
+# Check if features and labels are obtained
+if not mfcc_features or not labels:
+    print("No data to process. Please check your dataset directory.")
+else:
+    # Encode labels
+    label_encoder = LabelEncoder()
+    encoded_labels = label_encoder.fit_transform(labels)
+    
+    # Align all MFCC features using DTW with a reference MFCC
+    reference_mfcc = mfcc_features[0]
+    aligned_features = []
+    for mfcc in mfcc_features:
+        aligned_mfcc, _, _, _ = align_mfcc_with_dtw(reference_mfcc, mfcc)
+        aligned_features.append(aligned_mfcc)
+    
+    # Determine the maximum length of aligned MFCC features
+    max_length = max(mfcc.shape[1] for mfcc in aligned_features)
+    
+    # Pad aligned MFCC features to the same length
+    mfcc_features_padded = pad_mfcc_features(aligned_features, max_length)
+    
+    # Split the dataset into training and testing sets
+    X_train, X_test, y_train, y_test = train_test_split(mfcc_features_padded, encoded_labels, test_size=0.1, random_state=42)
+
+    # Train k-NN classifier
+    k = 29
+    
+    knn = KNeighborsClassifier(n_neighbors=k)
+
+    # Fit the k-NN classifier with training data
+    knn.fit(X_train, y_train)
+
+    # Save the model and label encoder
+    with open('knn_model.pkl', 'wb') as model_file:
+        pickle.dump(knn, model_file)
+
+    with open('mfcc_max_length.pkl', 'wb') as length_file:
+        pickle.dump(max_length, length_file)
+
+    with open('label_encoder.pkl', 'wb') as encoder_file:
+        pickle.dump(label_encoder, encoder_file)
+
+    # Save the reference MFCC
+    with open('reference_mfcc.pkl', 'wb') as ref_file:
+        pickle.dump(reference_mfcc, ref_file)
+
+    # Predict and evaluate
+    y_pred = knn.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f'Accuracy: {accuracy * 100:.2f}%')
+
+    # Test DTW Visualization for the first test example and the first training example
+    test_mfcc = extract_mfcc(audio_files[0])
+    train_mfcc = extract_mfcc(audio_files[1])
+    _, path = compute_dtw(test_mfcc, train_mfcc)
+    plot_dtw(test_mfcc, train_mfcc, path)
+
+    aligned_mfcc1, aligned_mfcc2, distance, path = align_mfcc_with_dtw(test_mfcc, train_mfcc)
+    print(f'Bentuk MFCC1 yang Diselaraskan: {aligned_mfcc1.shape}')
+    print(f'Bentuk MFCC2 yang Diselaraskan: {aligned_mfcc2.shape}')
