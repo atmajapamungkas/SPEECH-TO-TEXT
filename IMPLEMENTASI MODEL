@@ -1,0 +1,41 @@
+# Function to load model and other necessary files
+def load_model():
+    with open('knn_model.pkl', 'rb') as model_file:
+        knn_model = pickle.load(model_file)
+    with open('mfcc_max_length.pkl', 'rb') as length_file:
+        max_length = pickle.load(length_file)
+    with open('label_encoder.pkl', 'rb') as encoder_file:
+        label_encoder = pickle.load(encoder_file)
+    with open('reference_mfcc.pkl', 'rb') as ref_file:
+        reference_mfcc = pickle.load(ref_file)
+    return knn_model, max_length, label_encoder, reference_mfcc
+
+# Function to record audio from microphone
+def record_audio(duration=3, sr=22050):
+    print("Recording...")
+    audio = sd.rec(int(duration * sr), samplerate=sr, channels=1)
+    sd.wait()
+    print("Recording complete")
+    return audio.flatten(), sr
+
+# Function to preprocess and predict audio
+def predict_audio(knn_model, max_length, label_encoder, reference_mfcc):
+    audio, sr = record_audio()
+    mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
+    aligned_mfcc, _, _, _ = align_mfcc_with_dtw(reference_mfcc, mfcc)
+    if aligned_mfcc.shape[1] < max_length:
+        pad_width = max_length - aligned_mfcc.shape[1]
+        aligned_mfcc = np.pad(aligned_mfcc, ((0, 0), (0, pad_width)), mode='constant')
+    else:
+        aligned_mfcc = aligned_mfcc[:, :max_length]
+    aligned_mfcc = aligned_mfcc.flatten().reshape(1, -1)
+    prediction = knn_model.predict(aligned_mfcc)
+    predicted_label = label_encoder.inverse_transform(prediction)[0]
+    return predicted_label
+
+# Load the model and necessary files
+knn_model, max_length, label_encoder, reference_mfcc = load_model()
+
+# Predict real-time audio
+predicted_label = predict_audio(knn_model, max_length, label_encoder, reference_mfcc)
+print(f"Predicted Label: {predicted_label}")
